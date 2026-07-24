@@ -1,0 +1,46 @@
+# Demo config — "AJ's Cuts" barbershop
+name: "AJ's Cuts"
+phone: "+17048675309"
+address: "123 Main St, Greensboro, NC 27401"
+agent_name: "the front desk"
+
+# ElevenLabs voice — Bella (Professional, Bright, Warm)
+# Override per-client by uncommenting and swapping the ID
+voice_id: "hpp4J3VqNfWAUOO0d1Us"
+
+greeting: >
+  Thank you for calling AJ's Cuts!
+  I'm the AI front desk — I can answer your questions
+  and book your appointment. How can I help you today?
+
+hours:
+  Monday: "9am – 7pm"
+  Tuesday: "9am – 7pm"
+  Wednesday: "9am – 7pm"
+  Thursday: "9am – 7pm"
+  Friday: "9am – 8pm"
+  Saturday: "8am – 6pm"
+  Sunday: "Closed"
+
+services:
+  - name: "Haircut"
+    duration: 30
+    price: 25
+  - name: "Fade"
+    duration: 45
+    price: 35
+  - name: "Shape-up / Edge-up"
+    duration: 20
+    price: 15
+  - name: "Haircut + Beard Trim"
+    duration: 60
+    price: 45
+
+staff:
+  - "AJ"
+  - "Marcus"
+
+notes: >
+  Walk-ins welcome but appointments are preferred.
+  We accept cash, Zelle, and all major cards.
+  Free parking in the lot behind the building.

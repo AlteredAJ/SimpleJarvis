@@ -1,0 +1,11 @@
+.env
+*.db
+*.pyc
+__pycache__/
+.venv/
+static/audio/
+google_token.json
+*.wav
+*.mp3
+pinned.json
+_*.py

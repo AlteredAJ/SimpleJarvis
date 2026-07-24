@@ -1,0 +1,34 @@
+# Client onboarding template — fill this out for each new client
+name: "Business Name Here"
+phone: "+1..."
+address: "123 Street, City, State ZIP"
+agent_name: "the front desk"   # How the AI refers to itself
+
+# Customizable greeting (optional — defaults to "Thank you for calling {name}")
+greeting: >
+  Thank you for calling [Business Name]!
+  I'm the AI front desk. I can answer your questions
+  and help you book an appointment. How can I help you today?
+
+hours:
+  Monday: "9am – 5pm"
+  Tuesday: "9am – 5pm"
+  Wednesday: "9am – 5pm"
+  Thursday: "9am – 5pm"
+  Friday: "9am – 5pm"
+  Saturday: "Closed"
+  Sunday: "Closed"
+
+services:
+  - name: "Service Name"
+    duration: 60      # minutes
+    price: 100        # USD
+  # Add more services...
+
+staff:
+  - "Staff Member 1"
+  # Add more staff...
+
+notes: >
+  Any additional info the AI should know:
+  payment methods, parking, special policies, etc.

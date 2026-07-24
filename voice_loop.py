@@ -413,9 +413,20 @@ class InterruptState:
 
 
 def _synthesize_pcm(client: ElevenLabs, text: str) -> bytes:
-    """Blocking call to ElevenLabs, returns raw 16-bit PCM bytes at
-    SAMPLE_RATE. Uses output_format=pcm_16000 specifically so no decoding
-    step (mp3->PCM) is needed before handing it to sounddevice."""
+    """Returns raw 16-bit PCM bytes at SAMPLE_RATE (16000Hz). Tries
+    local Kokoro first (free, sub-200ms), falls back to ElevenLabs."""
+    try:
+        import httpx
+        resp = httpx.post(
+            "http://localhost:8880/v1/audio/speech",
+            json={"input": text, "voice": "af_sarah", "speed": 1.05, "output_format": "pcm_16000"},
+            timeout=httpx.Timeout(30),
+        )
+        resp.raise_for_status()
+        return resp.content
+    except Exception:  # noqa: BLE001 — fallback is intentional
+        pass
+
     chunks = client.text_to_speech.stream(
         voice_id=ELEVENLABS_VOICE_ID,
         text=text,

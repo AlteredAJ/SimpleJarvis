@@ -201,8 +201,19 @@ def _build_system_message(query: str, spoken: bool = False, aside: bool = False)
 
 
 def _speak(text: str) -> None:
-    """Best-effort spoken output. Falls back to silent (text-only) if the
-    ElevenLabs module can't run (e.g. no ELEVENLABS_API_KEY set)."""
+    """Best-effort spoken output. Tries local Kokoro first (free),
+    falls back to ElevenLabs."""
+    # Try Kokoro first
+    try:
+        from tools.tts_kokoro import speak as kokoro_speak
+        filename = kokoro_speak(text)
+        audio_path = os.path.join("static", "audio", filename)
+        os.startfile(audio_path)
+        return
+    except Exception:
+        pass
+
+    # Fall back to ElevenLabs
     try:
         from tools.tts import speak as elevenlabs_speak
     except ImportError as e:
@@ -211,13 +222,13 @@ def _speak(text: str) -> None:
 
     try:
         filename = elevenlabs_speak(text)
-    except Exception as e:  # noqa: BLE001 - best-effort, never crash the chat loop
+    except Exception as e:  # noqa: BLE001
         print(f"[speak] TTS failed ({e}) — continuing text-only.", file=sys.stderr)
         return
 
     audio_path = os.path.join("static", "audio", filename)
     try:
-        os.startfile(audio_path)  # Windows-only, matches this machine
+        os.startfile(audio_path)
     except Exception as e:  # noqa: BLE001
         print(f"[speak] generated {audio_path} but couldn't auto-play: {e}", file=sys.stderr)
 
@@ -283,6 +294,41 @@ def _extract_wiki_titles(system_text: str) -> list[str]:
     return re.findall(r'## (?:Wiki|Pinned|Jarvis Memory): (.+)', system_text)
 
 
+def _handle_locally(user_text: str) -> str | None:
+    """Return a reply for trivial deterministic commands, or None to escalate
+    to the brain. Zero API cost, near-instant response. Keep patterns cheap
+    and bounded — when unsure, return None."""
+    from datetime import datetime
+    import re
+
+    t = user_text.strip().lower()
+
+    # Time queries
+    if re.search(r'\b(what\s+(time|time\s+is\s+it)|current\s+time)\b', t):
+        now = datetime.now()
+        return f"It's {now.hour % 12 or 12}:{now.minute:02d} {'AM' if now.hour < 12 else 'PM'}."
+
+    # Date queries
+    if re.search(r'\b(what\'?s?\s+(the\s+)?date|what\s+is\s+(the\s+)?date|today\'?s?\s+date|what\s+day\s+is\s+it)\b', t):
+        now = datetime.now()
+        return f"Today is {now.strftime('%A')}, {now.strftime('%B')} {now.day}, {now.year}."
+
+    # Day of week only
+    if re.search(r'\b(what\s+day|day\s+of\s+(the\s+)?week)\b', t):
+        return f"It's {datetime.now().strftime('%A')}."
+
+    # Standalone "time" or "date"
+    if t in ("time", "date", "today"):
+        now = datetime.now()
+        if t == "time":
+            return f"It's {now.hour % 12 or 12}:{now.minute:02d} {'AM' if now.hour < 12 else 'PM'}."
+        if t == "date":
+            return f"Today is {now.strftime('%A')}, {now.strftime('%B')} {now.day}, {now.year}."
+        return f"Today is {now.strftime('%A')}, {now.strftime('%B')} {now.day}, {now.year}."
+
+    return None
+
+
 def run_turn(session_id: str, user_text: str, on_delta=None, stop_event=None, spoken: bool = False, aside: bool = False) -> str:
     """Process one user turn end-to-end and return Jarvis's reply text.
     Default brain: DeepSeek (brain_openai_compat). Hard turns escalate to
@@ -296,6 +342,14 @@ def run_turn(session_id: str, user_text: str, on_delta=None, stop_event=None, sp
     hud_server.publish({"type": "turn_start", "turn": _turn_count})
 
     memory.append_message(session_id, "user", user_text)
+
+    # Route trivial commands locally — zero API cost.
+    local_reply = _handle_locally(user_text)
+    if local_reply is not None:
+        memory.append_message(session_id, "assistant", local_reply)
+        hud_server.publish({"type": "assistant_final", "text": local_reply})
+        hud_server.set_state("speaking", label=local_reply[:80], turn=_turn_count)
+        return local_reply
 
     system_msg = _build_system_message(user_text, spoken=spoken, aside=aside)
     history = memory.get_history(session_id)[-MAX_HISTORY_MESSAGES:]

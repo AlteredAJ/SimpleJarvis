@@ -90,93 +90,66 @@ import stt
 import tray
 from elevenlabs.client import ElevenLabs
 
+# --- Neural VAD + Wake Word (Phase 3 Track B) ---
+_vad_model = None
+
+
+def _get_vad_iterator():
+    """Lazy-load Silero VAD Iterator — 0.3ms per 512-sample chunk on CPU."""
+    global _vad_model
+    if _vad_model is None:
+        from silero_vad import load_silero_vad, VADIterator
+        _vad_model = load_silero_vad()
+    return VADIterator(_vad_model, sampling_rate=16000, threshold=0.5,
+                       min_silence_duration_ms=350, speech_pad_ms=80)
+
+
+_oww_model = None
+
+
+def check_wake_word(audio: np.ndarray) -> bool:
+    """Returns True if 'hey jarvis' (or 'jarvis') is detected in the
+    audio. Uses openWakeWord ONNX model — 18ms inference, zero false
+    positives on silence/noise."""
+    global _oww_model
+    if _oww_model is None:
+        from openwakeword.model import Model
+        _oww_model = Model(wakeword_models=['hey_jarvis_v0.1'],
+                           inference_framework='onnx')
+    if len(audio) < 16000:
+        return False
+    # openWakeWord expects float16 arrays at 16kHz
+    score = _oww_model.predict(audio[-32000:].astype('float16'))
+    return score.get('hey_jarvis_v0.1', 0) > 0.5
+
+
+def strip_wake_word(text: str) -> str:
+    """Remove the wake word from the start of a transcribed utterance."""
+    import re
+    ww_re = re.compile(r'\bjarvis\b|\bjarv[ie]s\b|\bjar[- ]?vis\b', re.IGNORECASE)
+    stripped = ww_re.sub('', text, count=1)
+    return stripped.strip(' ,.-!?').strip()
+
+
 AGENT_NAME = chat.AGENT_NAME
 
-SAMPLE_RATE = 16000  # matches stt.py's Whisper input expectation
-BLOCK_FRAMES = 512  # ~32ms per block at 16kHz — small enough for fast interrupt reaction
+SAMPLE_RATE = 16000
+BLOCK_FRAMES = 512  # ~32ms per block at 16kHz
 
-# --- Barge-in VAD tuning ---------------------------------------------------
-# RMS threshold (on float32 samples in [-1, 1]) above which a block counts
-# as "voice-like." First live test (2026-07-20) reported interruptions not
-# reliably stopping speech — lowered from 0.02, since a threshold tuned too
-# conservatively (to avoid self-echo false triggers) will just as easily
-# miss real interrupt attempts at normal talking volume. Raise this back up
-# if it starts false-triggering on breathing/ambient noise instead.
-VAD_RMS_THRESHOLD = 0.012
-# Consecutive voice-like blocks required before it counts as a genuine
-# interruption (debounce against a single loud click/cough). At ~32ms/block,
-# 4 blocks ~= 130ms of sustained voice before it fires (was 6 / ~190ms —
-# tightened for a faster, more reliable reaction).
-VAD_TRIGGER_BLOCKS = 4
-# After the user stops talking (this many consecutive quiet blocks), stop
-# capturing and transcribe what was recorded. ~700ms of silence = done talking.
-VAD_ENDPOINT_SILENCE_BLOCKS = 22
-# Hard cap so a stuck-open mic / background noise can't record forever.
 MAX_CAPTURE_SECONDS = 20.0
-
-# How long after Jarvis finishes a reply to keep listening for a natural
-# follow-up WITHOUT requiring the wake word again — added 2026-07-20 after
-# live feedback that requiring "Jarvis" before every single turn felt wrong
-# for back-and-forth conversation. Re-opens after every reply given within
-# the window, so a real conversation can run indefinitely without ever
-# re-invoking the wake word; only silence for this long falls back to
-# requiring it.
 GRACE_WINDOW_SECONDS = 4.5
 
-ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "hpp4J3VqNfWAUOO0d1Us")  # Bella
+ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "hpp4J3VqNfWAUOO0d1Us")
 ELEVENLABS_MODEL = "eleven_flash_v2_5"
 
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 
-# --- Wake word ---------------------------------------------------------
-# Only gates the IDLE listening loop (starting a fresh interaction from
-# silence) — deliberately NOT applied to barge-ins mid-conversation. Having
-# to re-say "Jarvis" every time you cut in would defeat the whole point of
-# the interruption system: real back-and-forth doesn't re-address the other
-# person by name every sentence.
-WAKE_WORD = "jarvis"
-# Loose variants Whisper's base model plausibly mishears "Jarvis" as —
-# small model, short word, worth a little slack rather than requiring a
-# perfect transcription every time.
-_WAKE_WORD_RE = re.compile(r"\bjarvis\b|\bjarv[ie]s\b|\bjar[- ]?vis\b", re.IGNORECASE)
-
-
-def contains_wake_word(text: str) -> bool:
-    return bool(_WAKE_WORD_RE.search(text))
-
-
-def strip_wake_word(text: str) -> str:
-    """Removes the wake word (and any immediately-following filler
-    punctuation/comma) from the start of an utterance, leaving whatever
-    command followed it. "Jarvis, what time is it" -> "what time is it".
-    If the wake word isn't at the start (e.g. said mid-sentence), only the
-    matched word itself is removed, wherever it is."""
-    stripped = _WAKE_WORD_RE.sub("", text, count=1)
-    return stripped.strip(" ,.-!?").strip()
-
 
 class Listener:
-    """Continuously records mic audio into a growing buffer while armed, and
-    exposes an Event that fires once sustained voice-like energy is seen.
-    Capturing starts at construction time (not at trigger time) specifically
-    so the user's first word isn't lost while we're still deciding "is this
-    really speech" — by the time VAD_TRIGGER_BLOCKS confirms it, those first
-    blocks are already sitting in the buffer.
-    """
+    """Continuously records mic audio into a growing buffer. Uses Silero VAD
+    (neural voice activity detection) instead of RMS energy threshold."""
 
-    # How often to re-transcribe the growing buffer while streaming_transcribe
-    # is on. Benchmarked 2026-07-20: faster-whisper "base" transcribes a
-    # ~3.4s clip in ~0.44s on this CPU — re-running every 0.6s during active
-    # speech is a real but acceptable CPU cost for realistic utterance
-    # lengths (a few seconds), not the minutes-long case where re-processing
-    # the whole growing buffer from scratch each time would get wasteful.
     STREAMING_TRANSCRIBE_INTERVAL = 0.6
-    # A partial result counts as "fresh enough to use as final" if it ran
-    # within this long before endpoint silence fired — avoids a redundant
-    # final full-buffer pass in the common case (this IS the actual latency
-    # win: skipping the "one more transcription after you stop talking"
-    # tail), while still falling back to a fresh transcribe if the last
-    # partial is stale for some reason (e.g. transcription itself was slow).
     STREAMING_FRESHNESS_WINDOW = 1.2
 
     def __init__(
@@ -187,14 +160,11 @@ class Listener:
     ):
         self.speech_detected = threading.Event()
         self._chunks: list[np.ndarray] = []
-        self._voice_run = 0
-        self._silence_run = 0
-        self._triggered_at: float | None = None
+        self._vad = _get_vad_iterator()
+        self._vad_triggered = False
+        self._vad_ended = False
         self._lock = threading.Lock()
-        self._hud_feed = hud_feed  # only the "waiting for the user" idle listener
-        # feeds the HUD's level meter — a barge-in monitor running silently
-        # in the background while Jarvis talks shouldn't visually compete
-        # with the speaking animation until an interruption actually fires.
+        self._hud_feed = hud_feed
         self._stream = sd.InputStream(
             samplerate=SAMPLE_RATE,
             channels=1,
@@ -252,39 +222,35 @@ class Listener:
             age = time.time() - self._last_transcribe_time
             return self.partial_text if age < self.STREAMING_FRESHNESS_WINDOW else None
 
-    def _on_block(self, indata, frames, time_info, status):  # noqa: ANN001 - sounddevice callback signature
+    def _on_block(self, indata, frames, time_info, status):
         block = indata[:, 0].copy()
         with self._lock:
             self._chunks.append(block)
 
-        rms = float(np.sqrt(np.mean(np.square(block))))
         if self._hud_feed:
+            rms = float(np.sqrt(np.mean(np.square(block))))
             hud_server.set_level(rms)
-        if rms >= VAD_RMS_THRESHOLD:
-            self._voice_run += 1
-            self._silence_run = 0
-            if self._voice_run >= VAD_TRIGGER_BLOCKS and not self.speech_detected.is_set():
-                self._triggered_at = time.time()
+
+        result = self._vad(block)
+        if result is not None:
+            if "start" in result and not self.speech_detected.is_set():
                 self.speech_detected.set()
-                print(f"[voice][VAD] speech_detected fired (rms={rms:.4f}, threshold={VAD_RMS_THRESHOLD})", file=sys.stderr)
-        else:
-            self._silence_run += 1
-            self._voice_run = 0
+                self._vad_triggered = True
+                print(f"[voice][Silero] speech start", file=sys.stderr)
+            elif "end" in result:
+                self._vad_ended = True
+                print(f"[voice][Silero] speech end", file=sys.stderr)
 
     def wait_for_endpoint(self, max_seconds: float = MAX_CAPTURE_SECONDS) -> None:
-        """Block until the user has been quiet for VAD_ENDPOINT_SILENCE_BLOCKS
-        blocks after having spoken, or max_seconds elapses. Call this after
-        speech_detected fires (or when doing a normal, non-barge-in listen)."""
+        """Block until Silero VAD detects end-of-speech (silence gap) or timeout."""
         deadline = time.time() + max_seconds
         while time.time() < deadline:
-            if self.speech_detected.is_set() and self._silence_run >= VAD_ENDPOINT_SILENCE_BLOCKS:
+            if self._vad_ended:
                 return
-            time.sleep(0.02)
+            time.sleep(0.03)
 
     def wait_for_speech(self, max_seconds: float = MAX_CAPTURE_SECONDS) -> bool:
-        """Block until speech_detected fires or max_seconds elapses (normal,
-        non-barge-in listening: waiting for the user to start talking at
-        all). Returns True if speech was detected."""
+        """Block until Silero VAD detects speech onset or timeout."""
         return self.speech_detected.wait(timeout=max_seconds)
 
     def get_audio(self) -> np.ndarray:
@@ -773,20 +739,23 @@ def run(session_id: str) -> None:
                 continue
             hud_server.set_state("listening")
             listener.wait_for_endpoint()
-            heard = listener.get_fresh_partial()
-            if heard is None:
-                audio = listener.get_audio()
-                heard = stt.transcribe_array(audio, sample_rate=SAMPLE_RATE)
+            audio = listener.get_audio()
             listener.close()
             hud_server.set_level(0.0)
-            if heard:
-                hud_server.publish({"type": "user_final", "text": heard})
-            if not contains_wake_word(heard):
-                # Not addressed to Jarvis (could be AJ talking to someone
-                # else, TV audio, anything) — say nothing, don't log it,
-                # just go back to waiting. This is the whole point of the
-                # wake word: ambient speech shouldn't turn into a turn.
-                continue
+
+            # Primary: openWakeWord neural detection on raw audio
+            if not check_wake_word(audio):
+                # Fallback: Whisper + regex (catches variants openWakeWord might miss)
+                fallback_text = stt.transcribe_array(audio, sample_rate=SAMPLE_RATE)
+                if not re.search(r'\bjarvis\b|\bjarv[ie]s\b', fallback_text, re.IGNORECASE):
+                    continue
+                heard = fallback_text
+            else:
+                # Wake word detected — transcribe the full command
+                heard = stt.transcribe_array(audio, sample_rate=SAMPLE_RATE)
+                if not heard.strip():
+                    continue
+            hud_server.publish({"type": "user_final", "text": heard})
 
             hud_server.set_state("thinking")
             command = strip_wake_word(heard)

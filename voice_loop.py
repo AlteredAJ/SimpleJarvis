@@ -139,6 +139,29 @@ BLOCK_FRAMES = 512  # ~32ms per block at 16kHz
 MAX_CAPTURE_SECONDS = 20.0
 GRACE_WINDOW_SECONDS = 4.5
 
+from turn_detector import TurnDetector
+_turn_detector = TurnDetector()
+
+
+def _wait_for_turn_completion(listener, max_seconds: float = MAX_CAPTURE_SECONDS) -> None:
+    """Wait for either VAD silence OR semantic turn detection — whichever
+    comes first. Kills the 350ms silence-gap dead air when the text
+    clearly signals the user is done speaking."""
+    deadline = time.time() + max_seconds
+    while time.time() < deadline:
+        if listener._vad_ended:
+            return
+
+        partial = listener.get_fresh_partial()
+        if partial:
+            result = _turn_detector.process(partial)
+            if result.complete and result.confidence >= 0.7:
+                print(f"[voice][turn] semantic: {result.reason} "
+                      f"(confidence={result.confidence:.2f})", file=sys.stderr)
+                return
+
+        time.sleep(0.03)
+
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "hpp4J3VqNfWAUOO0d1Us")
 ELEVENLABS_MODEL = "eleven_flash_v2_5"
 
@@ -738,7 +761,8 @@ def run(session_id: str) -> None:
                 listener.close()
                 continue
             hud_server.set_state("listening")
-            listener.wait_for_endpoint()
+            _wait_for_turn_completion(listener)
+            _turn_detector.reset()
             audio = listener.get_audio()
             listener.close()
             hud_server.set_level(0.0)
@@ -779,7 +803,7 @@ def run(session_id: str) -> None:
                     follow_listener.close()
                     continue
                 hud_server.set_state("listening")
-                follow_listener.wait_for_endpoint()
+                _wait_for_turn_completion(follow_listener)
                 command = follow_listener.get_fresh_partial()
                 if command is None:
                     follow_audio = follow_listener.get_audio()
@@ -821,7 +845,7 @@ def run(session_id: str) -> None:
                     break  # window elapsed in silence — back to requiring "Jarvis"
 
                 hud_server.set_state("listening")
-                grace_listener.wait_for_endpoint()
+                _wait_for_turn_completion(grace_listener)
                 follow_up = grace_listener.get_fresh_partial()
                 if follow_up is None:
                     follow_audio = grace_listener.get_audio()

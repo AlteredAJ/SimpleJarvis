@@ -100,8 +100,8 @@ def _get_vad_iterator():
     if _vad_model is None:
         from silero_vad import load_silero_vad, VADIterator
         _vad_model = load_silero_vad()
-    return VADIterator(_vad_model, sampling_rate=16000, threshold=0.5,
-                       min_silence_duration_ms=350, speech_pad_ms=80)
+    return VADIterator(_vad_model, sampling_rate=16000, threshold=0.35,
+                       min_silence_duration_ms=250, speech_pad_ms=60)
 
 
 _oww_model = None
@@ -144,21 +144,32 @@ _turn_detector = TurnDetector()
 
 
 def _wait_for_turn_completion(listener, max_seconds: float = MAX_CAPTURE_SECONDS) -> None:
-    """Wait for either VAD silence OR semantic turn detection — whichever
-    comes first. Kills the 350ms silence-gap dead air when the text
-    clearly signals the user is done speaking."""
+    """Wait for VAD silence OR semantic turn detection — whichever
+    comes first. Falls back to a hard timeout at 5s if nothing else fires
+    (prevents infinite hangs from misconfigured VAD threshold)."""
     deadline = time.time() + max_seconds
+    hard_deadline = time.time() + 5.0  # force response after 5s no matter what
+    partial_count = 0
     while time.time() < deadline:
         if listener._vad_ended:
+            print(f"[voice][turn] VAD silence endpoint", file=sys.stderr)
             return
 
         partial = listener.get_fresh_partial()
         if partial:
+            partial_count += 1
             result = _turn_detector.process(partial)
             if result.complete and result.confidence >= 0.7:
                 print(f"[voice][turn] semantic: {result.reason} "
                       f"(confidence={result.confidence:.2f})", file=sys.stderr)
                 return
+
+        # Hard fallback: if we've been waiting > 5s since speech started,
+        # just respond — worse to hang than to interrupt mid-thought.
+        if time.time() > hard_deadline:
+            print(f"[voice][turn] hard timeout ({partial_count} partials, "
+                  f"vad_ended={listener._vad_ended})", file=sys.stderr)
+            return
 
         time.sleep(0.03)
 

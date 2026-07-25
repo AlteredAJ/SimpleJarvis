@@ -70,8 +70,8 @@ class TurnDetector:
         punctuation_threshold: float = 0.85,
         cue_threshold: float = 0.7,
         structural_threshold: float = 0.55,
-        stability_threshold: float = 0.4,
-        stability_ms: float = 900,  # time with no new tokens before we consider stable
+        stability_threshold: float = 0.35,
+        stability_ms: float = 700,  # time with no new tokens before we consider stable
     ):
         self.punctuation_threshold = punctuation_threshold
         self.cue_threshold = cue_threshold
@@ -105,7 +105,7 @@ class TurnDetector:
         words = text.split()
         word_count = len(words)
 
-        if word_count < _MIN_WORDS:
+        if word_count < _MIN_WORDS and elapsed < self.stability_ms * 2:
             return TurnResult(complete=False, confidence=0.0, reason="too short")
 
         # --- Heuristic 1: Sentence-terminal punctuation ---
@@ -141,11 +141,12 @@ class TurnDetector:
 
         # --- Heuristic 4: Stability fallback ---
         # If the text hasn't changed in a while, assume the user is done
-        # (but at lower confidence — could be mid-thought pause)
         if elapsed > self.stability_ms * 2:
+            # If we have enough words, higher confidence
+            conf = self.stability_threshold + 0.1 if word_count >= 5 else self.stability_threshold
             return TurnResult(
                 complete=True,
-                confidence=self.stability_threshold,
+                confidence=conf,
                 reason=f"stable {elapsed:.0f}ms (fallback)",
             )
 

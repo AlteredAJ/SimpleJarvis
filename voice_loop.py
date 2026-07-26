@@ -120,7 +120,10 @@ def check_wake_word(audio: np.ndarray) -> bool:
         return False
     # openWakeWord expects float16 arrays at 16kHz
     score = _oww_model.predict(audio[-32000:].astype('float16'))
-    return score.get('hey_jarvis_v0.1', 0) > 0.5
+    ww_score = score.get('hey_jarvis_v0.1', 0)
+    hit = ww_score > 0.3
+    print(f"[voice][wake] score={ww_score:.4f} hit={hit}", file=sys.stderr)
+    return hit
 
 
 def strip_wake_word(text: str) -> str:
@@ -782,7 +785,9 @@ def run(session_id: str) -> None:
             if not check_wake_word(audio):
                 # Fallback: Whisper + regex (catches variants openWakeWord might miss)
                 fallback_text = stt.transcribe_array(audio, sample_rate=SAMPLE_RATE)
-                if not re.search(r'\bjarvis\b|\bjarv[ie]s\b', fallback_text, re.IGNORECASE):
+                hit = re.search(r'\bjarvis\b|\bjarv[ie]s\b', fallback_text, re.IGNORECASE)
+                print(f"[voice][wake] Whisper: '{fallback_text}' -> hit={bool(hit)}", file=sys.stderr)
+                if not hit:
                     continue
                 heard = fallback_text
             else:

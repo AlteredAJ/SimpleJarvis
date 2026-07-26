@@ -21,17 +21,41 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import signal
 import subprocess
 import sys
 import time
-import webbrowser
 from datetime import datetime
 
 JARVIS_DIR = r"C:\Users\Altered\Claude\jarvis_extracted\jarvis"
 KOKORO_SERVER = r"C:\Users\Altered\Claude\kokoro_tts\kokoro_server.py"
 PY312 = r"C:\Users\Altered\AppData\Local\Programs\Python\Python312\python.exe"
 HUD_URL = "http://localhost:8799/"
+
+
+def _open_hud_window(url: str) -> None:
+    """Open the HUD in a borderless app-mode window (no tabs/address bar)."""
+    candidates = [
+        (shutil.which("msedge"), "--app={url} --window-size=500,640"),
+        (r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe", None),
+        (shutil.which("chrome"), "--app={url} --window-size=500,640"),
+        (r"C:\Program Files\Google\Chrome\Application\chrome.exe", None),
+    ]
+    for exe, args in candidates:
+        if exe and os.path.exists(exe):
+            try:
+                if args:
+                    subprocess.Popen(args.format(url=url).split(), executable=exe)
+                else:
+                    subprocess.Popen([exe, f"--app={url}", "--window-size=500,640"])
+                return
+            except OSError:
+                continue
+    try:
+        os.startfile(url)
+    except OSError:
+        pass
 
 _procs: list[subprocess.Popen] = []
 
@@ -104,7 +128,7 @@ def main() -> None:
             "while True: time.sleep(10)"
         ], cwd=JARVIS_DIR)
         time.sleep(1)
-        webbrowser.open(HUD_URL)
+        _open_hud_window(HUD_URL)
 
         # 3. Main Jarvis process (runs in foreground until exit)
         jarvis_cmd = [sys.executable, "voice_loop.py", "--session", session_id]

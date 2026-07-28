@@ -91,15 +91,22 @@ import tray
 from elevenlabs.client import ElevenLabs
 
 # --- Neural VAD + Wake Word (Phase 3 Track B) ---
-_vad_model = None
+_vad_model = None  # module-level, loaded lazily
+
+
+def _get_vad_model():
+    """Lazy-load Silero VAD model."""
+    global _vad_model
+    if _vad_model is None:
+        from silero_vad import load_silero_vad
+        _vad_model = load_silero_vad()
+    return _vad_model
 
 
 def _get_vad_iterator():
-    """Lazy-load Silero VAD Iterator — 0.3ms per 512-sample chunk on CPU."""
-    global _vad_model
-    if _vad_model is None:
-        from silero_vad import load_silero_vad, VADIterator
-        _vad_model = load_silero_vad()
+    """Lazy-load Silero VAD Iterator — for barge-in usage."""
+    from silero_vad import VADIterator
+    _get_vad_model()
     return VADIterator(_vad_model, sampling_rate=16000, threshold=0.35,
                        min_silence_duration_ms=250, speech_pad_ms=60)
 
@@ -148,15 +155,32 @@ _turn_detector = TurnDetector()
 
 def _wait_for_turn_completion(listener, max_seconds: float = MAX_CAPTURE_SECONDS) -> None:
     """Wait for VAD silence OR semantic turn detection — whichever
-    comes first. Falls back to a hard timeout at 5s if nothing else fires
-    (prevents infinite hangs from misconfigured VAD threshold)."""
+    comes first. Falls back to a hard timeout at 5s if nothing else fires."""
     deadline = time.time() + max_seconds
-    hard_deadline = time.time() + 5.0  # force response after 5s no matter what
+    hard_deadline = time.time() + 5.0
     partial_count = 0
+    last_vad_check = 0.0
+    vad_last_was_speech = False
+
     while time.time() < deadline:
-        if listener._vad_ended:
-            print(f"[voice][turn] VAD silence endpoint", file=sys.stderr)
-            return
+        # Run Silero VAD on buffered audio every ~300ms
+        now = time.time()
+        if now - last_vad_check > 0.3:
+            audio = listener.get_audio()
+            if len(audio) > SAMPLE_RATE * 0.5:
+                try:
+                    from silero_vad import get_speech_timestamps
+                    timestamps = get_speech_timestamps(audio, _vad_model, return_seconds=True)
+                    if len(timestamps) > 0:
+                        vad_last_was_speech = True
+                    elif vad_last_was_speech:
+                        # Had speech, now silence — endpoint reached
+                        print(f"[voice][turn] Silero VAD endpoint", file=sys.stderr)
+                        listener._vad_ended = True
+                        return
+                except Exception:
+                    pass
+            last_vad_check = now
 
         partial = listener.get_fresh_partial()
         if partial:
@@ -167,11 +191,8 @@ def _wait_for_turn_completion(listener, max_seconds: float = MAX_CAPTURE_SECONDS
                       f"(confidence={result.confidence:.2f})", file=sys.stderr)
                 return
 
-        # Hard fallback: if we've been waiting > 5s since speech started,
-        # just respond — worse to hang than to interrupt mid-thought.
         if time.time() > hard_deadline:
-            print(f"[voice][turn] hard timeout ({partial_count} partials, "
-                  f"vad_ended={listener._vad_ended})", file=sys.stderr)
+            print(f"[voice][turn] hard timeout ({partial_count} partials)", file=sys.stderr)
             return
 
         time.sleep(0.03)
@@ -197,7 +218,6 @@ class Listener:
     ):
         self.speech_detected = threading.Event()
         self._chunks: list[np.ndarray] = []
-        self._vad = _get_vad_iterator()
         self._vad_triggered = False
         self._vad_ended = False
         self._lock = threading.Lock()
@@ -264,19 +284,12 @@ class Listener:
         with self._lock:
             self._chunks.append(block)
 
+        rms = float(np.sqrt(np.mean(np.square(block))))
         if self._hud_feed:
-            rms = float(np.sqrt(np.mean(np.square(block))))
             hud_server.set_level(rms)
-
-        result = self._vad(block)
-        if result is not None:
-            if "start" in result and not self.speech_detected.is_set():
-                self.speech_detected.set()
-                self._vad_triggered = True
-                print(f"[voice][Silero] speech start", file=sys.stderr)
-            elif "end" in result:
-                self._vad_ended = True
-                print(f"[voice][Silero] speech end", file=sys.stderr)
+        # RMS speech gate — fires for both idle and barge-in listeners
+        if rms > 0.008 and not self.speech_detected.is_set():
+            self.speech_detected.set()
 
     def wait_for_endpoint(self, max_seconds: float = MAX_CAPTURE_SECONDS) -> None:
         """Block until Silero VAD detects end-of-speech (silence gap) or timeout."""

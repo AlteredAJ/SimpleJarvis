@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import queue
+import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -186,6 +187,7 @@ def start(port: int = 8799) -> str:
     if _server is not None:
         return f"http://localhost:{port}/"
     _server = ThreadingHTTPServer(("127.0.0.1", port), _Handler)
+    _server.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     thread = threading.Thread(target=_server.serve_forever, daemon=True)
     thread.start()
     return f"http://localhost:{port}/"

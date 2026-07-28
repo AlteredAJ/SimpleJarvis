@@ -116,6 +116,19 @@ def main() -> None:
     print()
 
     try:
+        # Kill leftover HUD/Kokoro from previous run (skip ourselves)
+        try:
+            import subprocess as _sp
+            pid = str(os.getpid())
+            result = _sp.run(["taskkill", "/f", "/fi", f"PID ne {pid}", "/im", "python.exe"],
+                           capture_output=True, timeout=5)
+        except Exception:
+            pass
+        time.sleep(0.5)
+    except Exception:
+        pass
+
+    try:
         # 1. Kokoro TTS (Python 3.12)
         if not args.no_kokoro:
             _start("Kokoro", [PY312, KOKORO_SERVER])

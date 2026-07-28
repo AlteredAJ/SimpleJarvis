@@ -184,6 +184,29 @@ ELEVENLABS_MODEL = "eleven_flash_v2_5"
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 
 
+def _get_mic_device():
+    """Returns HyperX Quadcast index auto-detected, or env var override."""
+    env = os.getenv("JARVIS_MIC_DEVICE", "")
+    if env:
+        try:
+            return int(env)
+        except ValueError:
+            for i, d in enumerate(sd.query_devices()):
+                if env.lower() in d["name"].lower() and d["max_input_channels"] > 0:
+                    return i
+        return None
+    for i, d in enumerate(sd.query_devices()):
+        if "hyperx" in d["name"].lower() and d["max_input_channels"] > 0:
+            import sys
+            print(f"[voice][mic] auto-detected HyperX Quadcast (index {i})",
+                  file=sys.stderr, flush=True)
+            return i
+    return None
+
+
+_MIC_DEVICE = _get_mic_device()
+
+
 class Listener:
     """Continuously records mic audio into a growing buffer. Uses Silero VAD
     (neural voice activity detection) instead of RMS energy threshold."""
@@ -620,7 +643,7 @@ def _speak_turn(client: ElevenLabs, speaker: Speaker, session_id: str, user_text
     reply in flight/printed per call to this function.
     """
     hud_server.set_state("thinking")
-    barge_listener = Listener(streaming_transcribe=True)
+    barge_listener = Listener(device=_MIC_DEVICE, streaming_transcribe=True)
     istate = InterruptState(barge_listener.speech_detected)
     gen_stop_event = threading.Event()
     speaker.reset()
@@ -767,7 +790,7 @@ def run(session_id: str) -> None:
         while True:
             # --- Wait for the wake word ----------------------------------
             hud_server.set_state("idle")
-            listener = Listener(hud_feed=True, streaming_transcribe=True)
+            listener = Listener(hud_feed=True, streaming_transcribe=True, device=_MIC_DEVICE)
             print("(listening for 'Jarvis'...)")
             got_speech = listener.wait_for_speech(max_seconds=MAX_CAPTURE_SECONDS)
             if not got_speech:
@@ -815,7 +838,7 @@ def run(session_id: str) -> None:
                     print(f"[voice] ack TTS failed ({e})", file=sys.stderr)
 
                 hud_server.set_state("idle")
-                follow_listener = Listener(hud_feed=True, streaming_transcribe=True)
+                follow_listener = Listener(hud_feed=True, streaming_transcribe=True, device=_MIC_DEVICE)
                 got_follow_up = follow_listener.wait_for_speech(max_seconds=8.0)
                 if not got_follow_up:
                     follow_listener.close()
@@ -861,7 +884,7 @@ def run(session_id: str) -> None:
             # actually elapses with silence.
             while True:
                 hud_server.set_state("idle", label="(still listening — no wake word needed)")
-                grace_listener = Listener(hud_feed=True, streaming_transcribe=True)
+                grace_listener = Listener(hud_feed=True, streaming_transcribe=True, device=_MIC_DEVICE)
                 got_follow_up = grace_listener.wait_for_speech(max_seconds=GRACE_WINDOW_SECONDS)
                 if not got_follow_up:
                     grace_listener.close()

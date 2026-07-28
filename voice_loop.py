@@ -716,7 +716,12 @@ def _speak_turn(client: ElevenLabs, speaker: Speaker, session_id: str, user_text
             print(reply_text)
             print(f"You: {interrupt_text}")
             time.sleep(0.35)  # let the "interrupted" flash actually be seen
-            _speak_turn(client, speaker, session_id, interrupt_text)  # recurse: fresh turn
+            try:
+                _speak_turn(client, speaker, session_id, interrupt_text)
+            except Exception as e:
+                print(f"[voice][error] interrupt turn crashed: {e}", file=sys.stderr)
+                import traceback
+                traceback.print_exc(file=sys.stderr)
             return
 
         print(reply_text)
@@ -795,15 +800,18 @@ def run(session_id: str) -> None:
             hud_server.set_level(0.0)
 
             # Primary: openWakeWord neural detection on raw audio
+            print(f"[voice][wake] checking audio ({len(audio)/SAMPLE_RATE:.1f}s)...", file=sys.stderr, flush=True)
             if not check_wake_word(audio):
-                # Fallback: Whisper + regex (catches variants openWakeWord might miss)
+                print(f"[voice][wake] openWakeWord miss, trying Whisper...", file=sys.stderr, flush=True)
+                # Fallback: Whisper + regex
                 fallback_text = stt.transcribe_array(audio, sample_rate=SAMPLE_RATE)
                 hit = re.search(r'\bjarvis\b|\bjarv[ie]s\b', fallback_text, re.IGNORECASE)
-                print(f"[voice][wake] Whisper: '{fallback_text}' -> hit={bool(hit)}", file=sys.stderr)
+                print(f"[voice][wake] Whisper: '{fallback_text}' -> hit={bool(hit)}", file=sys.stderr, flush=True)
                 if not hit:
                     continue
                 heard = fallback_text
             else:
+                print(f"[voice][wake] openWakeWord hit, transcribing...", file=sys.stderr, flush=True)
                 # Wake word detected — transcribe the full command
                 heard = stt.transcribe_array(audio, sample_rate=SAMPLE_RATE)
                 if not heard.strip():
@@ -856,7 +864,12 @@ def run(session_id: str) -> None:
             # dispatch the aside while the primary is still going. Prints
             # everything itself (including recursing into a fresh turn on a
             # hard cancel), so nothing to do here but call it. ------------
-            _speak_turn(client, speaker, session_id, command)
+            try:
+                _speak_turn(client, speaker, session_id, command)
+            except Exception as e:
+                print(f"[voice][error] turn crashed: {e}", file=sys.stderr)
+                import traceback
+                traceback.print_exc(file=sys.stderr)
 
             # --- Continuation grace window ---------------------------------
             # After a reply, real conversation doesn't require re-addressing
@@ -892,7 +905,12 @@ def run(session_id: str) -> None:
                     print(f"{AGENT_NAME}: See you, AJ.")
                     return
                 hud_server.set_state("thinking")
-                _speak_turn(client, speaker, session_id, follow_up)
+                try:
+                    _speak_turn(client, speaker, session_id, follow_up)
+                except Exception as e:
+                    print(f"[voice][error] grace turn crashed: {e}", file=sys.stderr)
+                    import traceback
+                    traceback.print_exc(file=sys.stderr)
                 # loop back: another grace window opens after THIS reply too
 
     except KeyboardInterrupt:

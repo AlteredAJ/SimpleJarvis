@@ -112,16 +112,22 @@ def main() -> None:
         print("  HUD opens at http://localhost:8799/")
         print("  Type 'exit' or Ctrl+C to quit.")
         print("-" * 45)
+        print("  (Logging to jarvis.log — run 'type jarvis.log' if crash)")
+        print("-" * 45)
 
-        # Run Jarvis in foreground — user interacts here
-        result = subprocess.run(
-            jarvis_cmd,
-            cwd=JARVIS_DIR,
-            creationflags=subprocess.CREATE_NEW_CONSOLE if not args.text else 0,
-        )
+        log_path = os.path.join(JARVIS_DIR, "jarvis.log")
+        with open(log_path, "w") as logfile:
+            result = subprocess.run(
+                jarvis_cmd,
+                cwd=JARVIS_DIR,
+                stdout=logfile,
+                stderr=subprocess.STDOUT,
+            )
 
         print("-" * 45)
         print(f"  Jarvis exited (code {result.returncode}).")
+        if result.returncode != 0:
+            print(f"  Crash log saved to jarvis.log — paste the last 20 lines")
 
     except KeyboardInterrupt:
         print("\nShutting down...")

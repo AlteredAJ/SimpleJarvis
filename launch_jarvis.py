@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import shutil
 import signal
 import subprocess
 import sys
@@ -31,31 +30,6 @@ from datetime import datetime
 JARVIS_DIR = r"C:\Users\Altered\Claude\jarvis_extracted\jarvis"
 KOKORO_SERVER = r"C:\Users\Altered\Claude\kokoro_tts\kokoro_server.py"
 PY312 = r"C:\Users\Altered\AppData\Local\Programs\Python\Python312\python.exe"
-HUD_URL = "http://localhost:8799/"
-
-
-def _open_hud_window(url: str) -> None:
-    """Open the HUD in a borderless app-mode window (no tabs/address bar)."""
-    candidates = [
-        (shutil.which("msedge"), "--app={url} --window-size=500,640"),
-        (r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe", None),
-        (shutil.which("chrome"), "--app={url} --window-size=500,640"),
-        (r"C:\Program Files\Google\Chrome\Application\chrome.exe", None),
-    ]
-    for exe, args in candidates:
-        if exe and os.path.exists(exe):
-            try:
-                if args:
-                    subprocess.Popen(args.format(url=url).split(), executable=exe)
-                else:
-                    subprocess.Popen([exe, f"--app={url}", "--window-size=500,640"])
-                return
-            except OSError:
-                continue
-    try:
-        os.startfile(url)
-    except OSError:
-        pass
 
 _procs: list[subprocess.Popen] = []
 
@@ -115,15 +89,10 @@ def main() -> None:
     print(f"  Session: {session_id}")
     print()
 
+    # Kill leftover Kokoro from previous run
     try:
-        # Kill leftover HUD/Kokoro from previous run (skip ourselves)
-        try:
-            import subprocess as _sp
-            pid = str(os.getpid())
-            result = _sp.run(["taskkill", "/f", "/fi", f"PID ne {pid}", "/im", "python.exe"],
-                           capture_output=True, timeout=5)
-        except Exception:
-            pass
+        subprocess.run(["taskkill", "/f", "/im", "python.exe", "/fi", f"PID ne {os.getpid()}"],
+                       capture_output=True, timeout=5)
         time.sleep(0.5)
     except Exception:
         pass
@@ -134,31 +103,13 @@ def main() -> None:
             _start("Kokoro", [PY312, KOKORO_SERVER])
             time.sleep(4)
 
-        # 2. HUD server (Python 3.14, which is default)
-        _start("HUD", [sys.executable, "-c",
-            "import hud_server; url = hud_server.start(); "
-            "import time; print(f'HUD at {url}', flush=True); "
-            "while True: time.sleep(10)"
-        ], cwd=JARVIS_DIR)
-        # Wait until HUD server is actually serving
-        for _ in range(20):
-            time.sleep(0.3)
-            try:
-                import urllib.request
-                urllib.request.urlopen(f"{HUD_URL}state", timeout=1)
-                break
-            except Exception:
-                pass
-        _open_hud_window(HUD_URL)
-        time.sleep(0.5)
-
-        # 3. Main Jarvis process (runs in foreground until exit)
+        # 2. Main Jarvis process — handles HUD + voice loop internally
         jarvis_cmd = [sys.executable, "voice_loop.py", "--session", session_id]
         if args.text:
             jarvis_cmd = [sys.executable, "chat.py", "--session", session_id]
 
         print(f"  [Jarvis] starting {'text' if args.text else 'voice'} loop...")
-        print(f"  HUD: {HUD_URL}")
+        print("  HUD opens at http://localhost:8799/")
         print("  Type 'exit' or Ctrl+C to quit.")
         print("-" * 45)
 

@@ -154,45 +154,26 @@ _turn_detector = TurnDetector()
 
 
 def _wait_for_turn_completion(listener, max_seconds: float = MAX_CAPTURE_SECONDS) -> None:
-    """Wait for VAD silence OR semantic turn detection — whichever
-    comes first. Falls back to a hard timeout at 5s if nothing else fires."""
+    """Wait for semantic turn detection OR hard timeout. Silero VAD is
+    disabled in this path (segfault risk from torch in polling thread).
+    TurnDetector provides punctuation/cue/stability heuristics. Hard
+    timeout at 5s as safety net."""
     deadline = time.time() + max_seconds
     hard_deadline = time.time() + 5.0
     partial_count = 0
-    last_vad_check = 0.0
-    vad_last_was_speech = False
 
     while time.time() < deadline:
-        # Run Silero VAD on buffered audio every ~300ms
-        now = time.time()
-        if now - last_vad_check > 0.3:
-            audio = listener.get_audio()
-            if len(audio) > SAMPLE_RATE * 0.5:
-                try:
-                    from silero_vad import get_speech_timestamps
-                    timestamps = get_speech_timestamps(audio, _vad_model, return_seconds=True)
-                    if len(timestamps) > 0:
-                        vad_last_was_speech = True
-                    elif vad_last_was_speech:
-                        # Had speech, now silence — endpoint reached
-                        print(f"[voice][turn] Silero VAD endpoint", file=sys.stderr)
-                        listener._vad_ended = True
-                        return
-                except Exception:
-                    pass
-            last_vad_check = now
-
         partial = listener.get_fresh_partial()
         if partial:
             partial_count += 1
             result = _turn_detector.process(partial)
             if result.complete and result.confidence >= 0.7:
                 print(f"[voice][turn] semantic: {result.reason} "
-                      f"(confidence={result.confidence:.2f})", file=sys.stderr)
+                      f"(confidence={result.confidence:.2f})", file=sys.stderr, flush=True)
                 return
 
         if time.time() > hard_deadline:
-            print(f"[voice][turn] hard timeout ({partial_count} partials)", file=sys.stderr)
+            print(f"[voice][turn] hard timeout ({partial_count} partials)", file=sys.stderr, flush=True)
             return
 
         time.sleep(0.03)

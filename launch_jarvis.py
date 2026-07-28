@@ -127,8 +127,17 @@ def main() -> None:
             "import time; print(f'HUD at {url}', flush=True); "
             "while True: time.sleep(10)"
         ], cwd=JARVIS_DIR)
-        time.sleep(1)
+        # Wait until HUD server is actually serving
+        for _ in range(20):
+            time.sleep(0.3)
+            try:
+                import urllib.request
+                urllib.request.urlopen(f"{HUD_URL}state", timeout=1)
+                break
+            except Exception:
+                pass
         _open_hud_window(HUD_URL)
+        time.sleep(0.5)
 
         # 3. Main Jarvis process (runs in foreground until exit)
         jarvis_cmd = [sys.executable, "voice_loop.py", "--session", session_id]

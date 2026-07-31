@@ -8,4 +8,5 @@ google_token.json
 *.wav
 *.mp3
 pinned.json
+jarvis.log
 _*.py
